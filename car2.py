@@ -1,94 +1,120 @@
-import random
-import gym
+"""
+http://incompleteideas.net/sutton/MountainCar/MountainCar1.cp
+permalink: https://perma.cc/6Z2N-PFWC
+"""
+
 import math
+import gym
+from gym import spaces
+from gym.utils import seeding
 import numpy as np
-from collections import deque
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.optimizers import Adam
+
+class MountainCarEnv(gym.Env):
+    metadata = {
+        'render.modes': ['human', 'rgb_array'],
+        'video.frames_per_second': 30
+    }
+
+    def __init__(self):
+        self.min_position = -1.2
+        self.max_position = 0.6
+        self.max_speed = 0.07
+        self.goal_position = 0.5
+
+        self.low = np.array([self.min_position, -self.max_speed])
+        self.high = np.array([self.max_position, self.max_speed])
+
+        self.viewer = None
+
+        self.action_space = spaces.Discrete(3)
+        self.observation_space = spaces.Box(self.low, self.high)
+
+        self._seed()
+        self.reset()
+
+    def _seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
+
+    def _step(self, action):
+        assert self.action_space.contains(action), "%r (%s) invalid" % (action, type(action))
+
+        position, velocity = self.state
+        velocity += (action-1)*0.001 + math.cos(3*position)*(-0.0025)
+        velocity = np.clip(velocity, -self.max_speed, self.max_speed)
+        position += velocity
+        position = np.clip(position, self.min_position, self.max_position)
+        if (position==self.min_position and velocity<0): velocity = 0
+
+        done = bool(position >= self.goal_position)
+        reward = -1.0
+
+        self.state = (position, velocity)
+        return np.array(self.state), reward, done, {}
+
+    def _reset(self):
+        self.state = np.array([self.np_random.uniform(low=-0.6, high=-0.4), 0])
+        return np.array(self.state)
+
+    def _height(self, xs):
+        return np.sin(3 * xs)*.45+.55
+
+    def _render(self, mode='human', close=False):
+        if close:
+            if self.viewer is not None:
+                self.viewer.close()
+                self.viewer = None
+            return
+
+        screen_width = 600
+        screen_height = 400
+
+        world_width = self.max_position - self.min_position
+        scale = screen_width/world_width
+        carwidth=40
+        carheight=20
 
 
-class DQNCartPoleSolver():
-    def __init__(self, n_episodes=1000, n_win_ticks=195, max_env_steps=None, gamma=1.0, epsilon=1.0, epsilon_min=0.01,
-                 epsilon_log_decay=0.995, alpha=0.01, alpha_decay=0.01, batch_size=64, monitor=False, quiet=False):
-        self.memory = deque(maxlen=100000)
-        self.env = gym.make('CartPole-v0')
-        if monitor: self.env = gym.wrappers.Monitor(self.env, '/home/uawsscu/Desktop/AI', force=True)
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_log_decay
-        self.alpha = alpha
-        self.alpha_decay = alpha_decay
-        self.n_episodes = n_episodes
-        self.n_win_ticks = n_win_ticks
-        self.batch_size = batch_size
-        self.quiet = quiet
-        if max_env_steps is not None: self.env._max_episode_steps = max_env_steps
+        if self.viewer is None:
+            from gym.envs.classic_control import rendering
+            self.viewer = rendering.Viewer(screen_width, screen_height)
+            xs = np.linspace(self.min_position, self.max_position, 100)
+            ys = self._height(xs)
+            xys = list(zip((xs-self.min_position)*scale, ys*scale))
 
-        # Init model
-        self.model = Sequential()
-        self.model.add(Dense(24, input_dim=4, activation='tanh'))
-        self.model.add(Dense(48, activation='tanh'))
-        self.model.add(Dense(2, activation='linear'))
-        self.model.compile(loss='mse', optimizer=Adam(lr=self.alpha, decay=self.alpha_decay))
+            self.track = rendering.make_polyline(xys)
+            self.track.set_linewidth(4)
+            self.viewer.add_geom(self.track)
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+            clearance = 10
 
-    def choose_action(self, state, epsilon):
-        return self.env.action_space.sample() if (np.random.random() <= epsilon) else np.argmax(
-            self.model.predict(state))
+            l,r,t,b = -carwidth/2, carwidth/2, carheight, 0
+            car = rendering.FilledPolygon([(l,b), (l,t), (r,t), (r,b)])
+            car.add_attr(rendering.Transform(translation=(0, clearance)))
+            self.cartrans = rendering.Transform()
+            car.add_attr(self.cartrans)
+            self.viewer.add_geom(car)
+            frontwheel = rendering.make_circle(carheight/2.5)
+            frontwheel.set_color(.5, .5, .5)
+            frontwheel.add_attr(rendering.Transform(translation=(carwidth/4,clearance)))
+            frontwheel.add_attr(self.cartrans)
+            self.viewer.add_geom(frontwheel)
+            backwheel = rendering.make_circle(carheight/2.5)
+            backwheel.add_attr(rendering.Transform(translation=(-carwidth/4,clearance)))
+            backwheel.add_attr(self.cartrans)
+            backwheel.set_color(.5, .5, .5)
+            self.viewer.add_geom(backwheel)
+            flagx = (self.goal_position-self.min_position)*scale
+            flagy1 = self._height(self.goal_position)*scale
+            flagy2 = flagy1 + 50
+            flagpole = rendering.Line((flagx, flagy1), (flagx, flagy2))
+            self.viewer.add_geom(flagpole)
+            flag = rendering.FilledPolygon([(flagx, flagy2), (flagx, flagy2-10), (flagx+25, flagy2-5)])
+            flag.set_color(.8,.8,0)
+            self.viewer.add_geom(flag)
 
-    def get_epsilon(self, t):
-        return max(self.epsilon_min, min(self.epsilon, 1.0 - math.log10((t + 1) * self.epsilon_decay)))
+        pos = self.state[0]
+        self.cartrans.set_translation((pos-self.min_position)*scale, self._height(pos)*scale)
+        self.cartrans.set_rotation(math.cos(3 * pos))
 
-    def preprocess_state(self, state):
-        return np.reshape(state, [1, 4])
-
-    def replay(self, batch_size):
-        x_batch, y_batch = [], []
-        minibatch = random.sample(
-            self.memory, min(len(self.memory), batch_size))
-        for state, action, reward, next_state, done in minibatch:
-            y_target = self.model.predict(state)
-            y_target[0][action] = reward if done else reward + self.gamma * np.max(self.model.predict(next_state)[0])
-            x_batch.append(state[0])
-            y_batch.append(y_target[0])
-
-        self.model.fit(np.array(x_batch), np.array(y_batch), batch_size=len(x_batch), verbose=0)
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
-
-    def run(self):
-        scores = deque(maxlen=100)
-
-        for e in range(self.n_episodes):
-            state = self.preprocess_state(self.env.reset())
-            done = False
-            i = 0
-            while not done:
-                action = self.choose_action(state, self.get_epsilon(e))
-                next_state, reward, done, _ = self.env.step(action)
-                next_state = self.preprocess_state(next_state)
-                self.remember(state, action, reward, next_state, done)
-                state = next_state
-                i += 1
-
-            scores.append(i)
-            mean_score = np.mean(scores)
-            if mean_score >= self.n_win_ticks and e >= 100:
-                if not self.quiet: print('Ran {} episodes. Solved after {} trials ✔'.format(e, e - 100))
-                return e - 100
-            if e % 100 == 0 and not self.quiet:
-                print('[Episode {}] - Mean survival time over last 100 episodes was {} ticks.'.format(e, mean_score))
-
-            self.replay(self.batch_size)
-
-        if not self.quiet: print('Did not solve after {} episodes 😞'.format(e))
-        return e
-
-
-if __name__ == '__main__':
-    agent = DQNCartPoleSolver()
-    agent.run()
+        return self.viewer.render(return_rgb_array = mode=='rgb_array')

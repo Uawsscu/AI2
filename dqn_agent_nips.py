@@ -4,7 +4,7 @@ import tensorflow as tf
 
 # hyperparameters
 n_obs = 80 * 80  # dimensionality of observations
-h = 200  # number of hidden layer neurons
+h = 200  # hidden layer neurons
 n_actions = 3  # number of available actions
 learning_rate = 1e-3 #เป็นค่าเลอนนิ่งเลทของสูตร ปรับขนาดขนมปังโดยดูจากรางวัล (reword)#เลอนิงเลด
 gamma = .99  # ลดขนาดขนมปัง
@@ -34,10 +34,29 @@ with tf.variable_scope('layer_two', reuse=False):
 
 # tf operations
 def tf_discount_rewards(tf_r):  # tf_r ~ [game_steps,1]
-    discount_f = lambda a, v: a * gamma + v;
-    tf_r_reverse = tf.scan(discount_f, tf.reverse(tf_r, [True, False]))
+    discount_f = lambda a, v: a * gamma + v;  # รับ gamma=.99 เข้ามาก่อน แล้วเอา a,vทีหลัง
+    # print ("ttttt",discount_f,"eee")
+    # print("tf.reverse===",tf.reverse(tf_r, [0,0]))
+    #print ("r==",tf_r)
+    tf_r_reverse = tf.scan(discount_f, tf.reverse(tf_r, [True, False]))  # reverse กลับด้าน
+    """
+    x = tf.constant([[[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+                [[11, 12, 13], [14, 15, 16], [17, 18, 19]]])
+
+    tf.reverse(x, [0, 1]):
+[[[17 18 19]
+  [14 15 16]
+  [11 12 13]]
+
+ [[ 7  8  9]
+  [ 4  5  6]
+  [ 1  2  3]]]"""
     tf_discounted_r = tf.reverse(tf_r_reverse, [True, False])
-    return tf_discounted_r
+    # print (tf_discounted_r)
+    return tf_discounted_r  # Tensor("ReverseV2_1:0", shape=(4,) //4ตัว//, dtype=float32)
+
+
+# print (tf_discount_rewards([3.,4.,5.,6.]))
 
 
 def tf_policy_forward(x):  # x ~ [1,D]
@@ -65,17 +84,19 @@ tf_y = tf.placeholder(dtype=tf.float32, shape=[None, n_actions], name="tf_y")
 tf_epr = tf.placeholder(dtype=tf.float32, shape=[None, 1], name="tf_epr")
 
 # tf reward processing (need tf_discounted_epr for policy gradient wizardry)
+
 tf_discounted_epr = tf_discount_rewards(tf_epr)
 tf_mean, tf_variance = tf.nn.moments(tf_discounted_epr, [0], shift=None, name="reward_moments")
 tf_discounted_epr -= tf_mean
 tf_discounted_epr /= tf.sqrt(tf_variance + 1e-6)
 
 # tf optimizer op
-tf_aprob = tf_policy_forward(tf_x)
-loss = tf.nn.l2_loss(tf_y - tf_aprob)
+tf_Softmax = tf_policy_forward(tf_x)
+loss = tf.nn.l2_loss(tf_y - tf_Softmax)
+#print ("loss",loss)
 optimizer = tf.train.RMSPropOptimizer(learning_rate, decay=decay)
 tf_grads = optimizer.compute_gradients(loss, var_list=tf.trainable_variables(), grad_loss=tf_discounted_epr)
-train_op = optimizer.apply_gradients(tf_grads)
+train_op = optimizer.apply_gradients(tf_grads) #เอาเกรเดียนมาปรับค่าเทรน
 
 # tf graph initialization
 sess = tf.InteractiveSession()
@@ -103,17 +124,25 @@ while True:
 
     # preprocess the observation, set input to network to be difference image
     cur_x = prepro(s1)
-    x = cur_x - prev_x if prev_x is not None else np.zeros(n_obs)
-    prev_x = cur_x
+    x = cur_x - prev_x if prev_x is not None else np.zeros(n_obs) #รอบแรกมัน null ต้องทำให้มีข้อมูล
+    prev_x = cur_x #เปลี่ยนเฟรม
 
     # stochastically sample a policy from the network
-    feed = {tf_x: np.reshape(x, (1, -1))}
-    aprob = sess.run(tf_aprob, feed);
-    aprob = aprob[0, :]
+    feed = {tf_x: np.reshape(x, (1, -1))} # none *1 คือ 1 บรรทัด ไม่รู้จบ
+    #print (feed)
+    """
+    np.reshape(3, (1, -1))
+    (1 , 2, 3,4)
+    """
+    #print (tf_aprob)
+    aprob = sess.run(tf_Softmax, feed);
+    aprob = aprob[0, :] #เอาตำแหน่ง 0-n
+    print (aprob)
+    if np.random.rand(1) < e:
+        a[0] = env.action_space.sample()
     action = np.random.choice(n_actions, p=aprob)
     label = np.zeros_like(aprob);
     label[action] = 1
-#ooooo
 
     # step the environment and get new measurements
     s1, r, d, info = env.step(action + 1)  #env.step(a)ยืนยันการกระทำ และนำผลของการกระทำไปคำนวณต่อ observation, reward, done, info = env.step(action)
@@ -133,9 +162,10 @@ while True:
 
         # parameter update
         feed = {tf_x: np.vstack(xList), tf_epr: np.vstack(rList), tf_y: np.vstack(yList)}
+        #print (feed)  [ 0.,  0.,  0., ...,  0.,  0.,  0.]] //update 80*80 & [ 0.,  1.,  0.], update action
+
         _ = sess.run(train_op, feed)
 
-        # print progress console
         if j % 10 == 0:
             print ('ep {}: reward: {}, mean reward: {:3f}'.format(j, rAll, running_reward))
         else:
